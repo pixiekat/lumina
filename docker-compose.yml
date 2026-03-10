@@ -1,0 +1,136 @@
+version: "3.9"
+
+services:
+
+  # ── ctomop PostgreSQL (plain Postgres 15) ───────────────────────────────────
+  ctomop_db:
+    image: postgres:15
+    restart: unless-stopped
+    container_name: ctomop_db
+    environment:
+      POSTGRES_USER: ${CTOMOP_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${CTOMOP_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${CTOMOP_POSTGRES_DB}
+    ports:
+      - "5432:5432"
+    volumes:
+      - ctomop_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${CTOMOP_POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── exact PostgreSQL + PostGIS (needs PostGIS extension) ────────────────────
+  exact_db:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    container_name: exact_db
+    environment:
+      POSTGRES_USER: ${EXACT_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${EXACT_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${EXACT_POSTGRES_DB}
+    ports:
+      - "5433:5432"                        # Offset to avoid collision with ctomop_db
+    volumes:
+      - exact_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${EXACT_POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # ── ctomop web app ──────────────────────────────────────────────────────────
+  ctomop_web:
+    build:
+      context: ../ctomop                    # Path to ctomop project directory
+    restart: unless-stopped
+    container_name: ctomop_web
+    depends_on:
+      ctomop_db:
+        condition: service_healthy
+    environment:
+      # ctomop settings.py reads DATABASE_URL as a single DSN string
+      DATABASE_URL: postgres://${CTOMOP_POSTGRES_USER}:${CTOMOP_POSTGRES_PASSWORD}@ctomop_db:5432/${CTOMOP_POSTGRES_DB}
+      SECRET_KEY: ${CTOMOP_SECRET_KEY}
+      DEBUG: ${CTOMOP_DEBUG}
+      PRODUCTION_URL: ${CTOMOP_PRODUCTION_URL}
+      SUB_PATH: ${CTOMOP_SUB_PATH}
+      # Optional — only needed if deploying to Railway/Render
+      # RAILWAY_PUBLIC_DOMAIN: ${CTOMOP_RAILWAY_DOMAIN}
+      # RENDER_EXTERNAL_URL: ${CTOMOP_RENDER_URL}
+      PORT: 8000
+    ports:
+      - "8000:8000"
+    command: >
+      sh -c "python manage.py migrate &&
+            gunicorn ctomop.wsgi:application
+            --bind 0.0.0.0:8000
+            --workers 4
+            --threads 2
+            --timeout 120
+            --access-logfile -
+            --error-logfile -
+            --log-level info"
+
+  # ── exact web app ───────────────────────────────────────────────────────────
+  exact_app:
+    build:
+      context: ../exact                     # Path to exact project directory
+    restart: unless-stopped
+    container_name: exact_app
+    depends_on:
+      exact_db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    environment:
+      SECRET_KEY: ${EXACT_SECRET_KEY}
+      DEBUG: ${EXACT_DEBUG}
+      ALLOWED_HOSTS: ${EXACT_ALLOWED_HOSTS}
+      DATABASE_NAME: ${EXACT_POSTGRES_DB}
+      DATABASE_USER: ${EXACT_POSTGRES_USER}
+      DATABASE_PASSWORD: ${EXACT_POSTGRES_PASSWORD}
+      DATABASE_HOST: exact_db              # Hardcoded — always the service name
+      DATABASE_PORT: 5432                  # Hardcoded — internal container port, never 5433
+      REDIS_URL: redis://redis:6379
+      ENVIRONMENT: ${ENVIRONMENT}
+      # Optional
+      # CSRF_TRUSTED_ORIGINS: ${EXACT_CSRF_ORIGINS}
+      # ADD_SEARCH_TRIALS_TRACES: false
+    ports:
+      - "8001:8000"                        # Offset to avoid collision with ctomop_web
+    command: >
+      sh -c "python manage.py migrate &&
+            python manage.py seed_reference_data &&
+            gunicorn exact.wsgi --workers 4 --timeout 300 --log-file -"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/swagger/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ── Redis (for exact's async Celery tasks) ──────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    container_name: exact_redis
+    ports:
+      - "6379:6379"
+
+  # ── Celery worker for exact (uncomment when ready) ──────────────────────────
+  # exact_worker:
+  #   build:
+  #     context: ./exact
+  #   env_file: ./exact/.env
+  #   environment:
+  #     DATABASE_HOST: exact_db
+  #     REDIS_URL: redis://redis:6379
+  #   depends_on:
+  #     - exact_db
+  #     - redis
+  #   command: celery -A exact worker -l info
+
+volumes:
+  ctomop_postgres_data:
+  exact_postgres_data:

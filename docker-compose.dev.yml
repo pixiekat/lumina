@@ -1,0 +1,19 @@
+services:
+  ctomop_web:
+    restart: no
+    environment:
+      DEBUG: "True"
+
+  exact_app:
+    restart: no
+    environment:
+      DEBUG: "true"
+
+  ctomop_db:
+    restart: no
+
+  exact_db:
+    restart: no
+
+  redis:
+    restart: no
