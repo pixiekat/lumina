@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
 
   # ── ctomop PostgreSQL (plain Postgres 15) ───────────────────────────────────
@@ -91,6 +89,9 @@ services:
       DATABASE_NAME: ${EXACT_POSTGRES_DB}
       DATABASE_USER: ${EXACT_POSTGRES_USER}
       DATABASE_PASSWORD: ${EXACT_POSTGRES_PASSWORD}
+      TRIALS_DATABASE_URL: ${TRIALS_DATABASE_URL}
+      PATIENT_DATABASE_URL: ${PATIENT_DATABASE_URL}
+      MALLOC_NANO_ZONE: "0"
       DATABASE_HOST: exact_db              # Hardcoded — always the service name
       DATABASE_PORT: 5432                  # Hardcoded — internal container port, never 5433
       REDIS_URL: redis://redis:6379
@@ -98,6 +99,9 @@ services:
       # Optional
       # CSRF_TRUSTED_ORIGINS: ${EXACT_CSRF_ORIGINS}
       # ADD_SEARCH_TRIALS_TRACES: false
+    volumes:
+      - /tmp:/tmp                        # For storing temporary files like uploaded datasets
+    entrypoint: ["docker/entrypoint.sh"]
     ports:
       - "8001:8000"                        # Offset to avoid collision with ctomop_web
     command: >
@@ -105,11 +109,11 @@ services:
             python manage.py seed_reference_data &&
             gunicorn exact.wsgi --workers 4 --timeout 300 --log-file -"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:8000/swagger/ || exit 1"]
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/swagger/')\""]
       interval: 10s
       timeout: 5s
       retries: 3
-
+      start_period: 60s
   # ── Redis (for exact's async Celery tasks) ──────────────────────────────────
   redis:
     image: redis:7-alpine
