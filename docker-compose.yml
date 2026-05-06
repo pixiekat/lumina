@@ -101,12 +101,15 @@ services:
       # ADD_SEARCH_TRIALS_TRACES: false
     volumes:
       - /tmp:/tmp                        # For storing temporary files like uploaded datasets
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     entrypoint: ["docker/entrypoint.sh"]
     ports:
       - "8001:8000"                        # Offset to avoid collision with ctomop_web
     command: >
       sh -c "python manage.py migrate &&
             python manage.py seed_reference_data &&
+            python manage.py collectstatic --noinput --clear &&
             gunicorn exact.wsgi --workers 4 --timeout 300 --log-file -"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/swagger/')\""]
