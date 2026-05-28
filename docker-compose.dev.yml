@@ -17,3 +17,6 @@ services:
 
   redis:
     restart: no
+
+  lumina_db:
+    restart: no

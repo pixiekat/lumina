@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: ${CTOMOP_POSTGRES_PASSWORD}
       POSTGRES_DB: ${CTOMOP_POSTGRES_DB}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - ctomop_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -29,7 +29,7 @@ services:
       POSTGRES_PASSWORD: ${EXACT_POSTGRES_PASSWORD}
       POSTGRES_DB: ${EXACT_POSTGRES_DB}
     ports:
-      - "5433:5432"                        # Offset to avoid collision with ctomop_db
+      - "127.0.0.1:5433:5432"                        # Offset to avoid collision with ctomop_db
     volumes:
       - exact_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -96,8 +96,11 @@ services:
       DATABASE_PORT: 5432                  # Hardcoded — internal container port, never 5433
       REDIS_URL: redis://redis:6379
       ENVIRONMENT: ${ENVIRONMENT}
+      # Mount under /exact behind the Apache reverse proxy. Must match the
+      # Apache ProxyPass prefix. Leave blank to mount at root.
+      SUB_PATH: ${EXACT_SUB_PATH}
       # Optional
-      # CSRF_TRUSTED_ORIGINS: ${EXACT_CSRF_ORIGINS}
+      CSRF_TRUSTED_ORIGINS: ${EXACT_CSRF_ORIGINS}
       # ADD_SEARCH_TRIALS_TRACES: false
     volumes:
       - /tmp:/tmp                        # For storing temporary files like uploaded datasets
@@ -138,6 +141,51 @@ services:
   #     - redis
   #   command: celery -A exact worker -l info
 
+  # ── lumina evaluation sandbox (PostGIS-enabled) ─────────────────────────────
+  #   ONE database, MANY schemas (one per evaluation). Schemas join freely.
+  #   PostGIS image = plain Postgres + PostGIS available (not forced on).
+  lumina_db:
+    image: postgis/postgis:16-3.4            # superset of postgres:16; matches exact_db
+    restart: unless-stopped
+    container_name: lumina_db
+    environment:
+      POSTGRES_USER: ${LUMINA_POSTGRES_USER}
+      POSTGRES_PASSWORD: ${LUMINA_POSTGRES_PASSWORD}
+      POSTGRES_DB: ${LUMINA_POSTGRES_DB}
+    ports:
+      # Loopback-only bind: reachable from the host itself (→ SSH tunnel), never
+      # the public NIC. Bypasses the Docker-punches-through-ufw footgun.
+      - "127.0.0.1:5444:5432"
+    volumes:
+      - lumina_postgres_data:/var/lib/postgresql/data
+      - ./lumina/initdb:/docker-entrypoint-initdb.d:ro
+    # Tuning lives here = Compose file stays the single source of truth.
+    # Starters below assume the container can use ~2GB. To scale: raise these.
+    # Rule-of-thumb starting points (tune against PGTune for your real RAM):
+    #   shared_buffers        ≈ 25% of RAM you'll give the container
+    #   effective_cache_size  ≈ 50–75% of that RAM (a hint, not an allocation)
+    #   work_mem              per-sort/hash, per-connection — raise carefully
+    #   maintenance_work_mem  for index builds / VACUUM / bulk loads
+    command: >
+      postgres
+        -c shared_buffers=512MB
+        -c effective_cache_size=1536MB
+        -c work_mem=64MB
+        -c maintenance_work_mem=256MB
+        -c max_wal_size=2GB
+    # Optional but smart once datasets grow: cap how much RAM this container can
+    # ever eat, so a runaway Achilles query can't OOM ctomop/exact alongside it.
+    # deploy:
+    #   resources:
+    #     limits:
+    #       memory: 2g
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${LUMINA_POSTGRES_USER} -d ${LUMINA_POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   ctomop_postgres_data:
   exact_postgres_data:
+  lumina_postgres_data:
